@@ -55,11 +55,13 @@
 ---
 
 ### Phase 5 — Media Links [DONE]
-- [x] open crate for xdg-open (system browser)
-- [x] YouTube / Spotify "Open" buttons in song_detail.rs
-- [x] OpenUrl(String) message, spawns non-blocking thread
-- [x] Note: true webkit2gtk embedding deferred (event-loop conflict with winit)
-- [x] cargo check passes
+- [x] YouTube / Spotify buttons in song_detail.rs
+- [x] OpenUrl(String) message
+- [x] webkit2gtk companion window (src/webview/gtk_window.rs) — GTK runs in a background thread; iced communicates via glib channel
+- [x] Window hides on close and is reused on subsequent opens
+- [x] Lazy-init: GTK thread spawned on first click (after winit has called XInitThreads)
+- [x] Fallback to system browser if GTK init fails
+- [x] cargo build passes
 
 
 ---
@@ -89,10 +91,9 @@
 - iced version: 0.12.1 (Application trait API — not the newer functional style)
 - rodio 0.22 API: `DeviceSinkBuilder` + `Player` (not the older `Sink`/`OutputStream`)
 - Cloud sync: intentionally deferred; schema uses UUID PKs + updated_at timestamps
-- webkit2gtk embedding deferred (event-loop conflict with winit/iced); YouTube/Spotify open in system browser via `open` crate
+- YouTube/Spotify open in a webkit2gtk companion window (960×600, no browser chrome); GTK runs on a dedicated background thread communicating via glib channel
 
 ## Possible Future Enhancements
 - Cloud sync backend (schema already sync-ready with UUIDs + updated_at)
 - Settings screen (API key entry, model selection, default files dir)
-- In-app webview for YouTube/Spotify (needs dedicated GTK thread)
 - Sync accuracy improvement (re-analyze with claude-opus-4-8 for higher accuracy)
