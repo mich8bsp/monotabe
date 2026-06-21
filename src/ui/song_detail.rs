@@ -15,18 +15,35 @@ pub fn view<'a>(
     pdf_rendering: bool,
     has_sync_map: bool,
     sync_analyzing: bool,
+    confirming_delete: bool,
 ) -> Element<'a, Message> {
-    let actions = row![
-        button("Edit")
-            .on_press(Message::EditSong(song.id.clone()))
-            .padding([6, 18])
-            .style(iced::theme::Button::Secondary),
-        button("Delete")
-            .on_press(Message::DeleteSong(song.id.clone()))
-            .padding([6, 18])
-            .style(iced::theme::Button::Destructive),
-    ]
-    .spacing(8);
+    let actions = if confirming_delete {
+        row![
+            text("Delete this song?").size(14),
+            button("Yes, delete")
+                .on_press(Message::DeleteSong(song.id.clone()))
+                .padding([6, 18])
+                .style(iced::theme::Button::Destructive),
+            button("Cancel")
+                .on_press(Message::CancelDelete)
+                .padding([6, 18])
+                .style(iced::theme::Button::Secondary),
+        ]
+        .spacing(8)
+        .align_items(iced::Alignment::Center)
+    } else {
+        row![
+            button("Edit")
+                .on_press(Message::EditSong(song.id.clone()))
+                .padding([6, 18])
+                .style(iced::theme::Button::Secondary),
+            button("Delete")
+                .on_press(Message::ConfirmDeleteSong(song.id.clone()))
+                .padding([6, 18])
+                .style(iced::theme::Button::Destructive),
+        ]
+        .spacing(8)
+    };
 
     let mut top = column![
         text(&song.title).size(26),
@@ -41,7 +58,7 @@ pub fn view<'a>(
         let mut link_row = row![].spacing(8);
         if let Some(url) = &song.youtube_url {
             link_row = link_row.push(
-                button("▶ YouTube")
+                button("YouTube")
                     .on_press(Message::OpenUrl(url.clone()))
                     .padding([5, 14])
                     .style(iced::theme::Button::Secondary),
@@ -49,7 +66,7 @@ pub fn view<'a>(
         }
         if let Some(url) = &song.spotify_url {
             link_row = link_row.push(
-                button("♫ Spotify")
+                button("Spotify")
                     .on_press(Message::OpenUrl(url.clone()))
                     .padding([5, 14])
                     .style(iced::theme::Button::Secondary),
@@ -86,7 +103,7 @@ pub fn view<'a>(
         };
         let mut sync_row = row![sync_btn].spacing(8).align_items(iced::Alignment::Center);
         if has_sync_map && !sync_analyzing {
-            sync_row = sync_row.push(text("✓ Sync active").size(12));
+            sync_row = sync_row.push(text("Sync active").size(12));
             sync_row = sync_row.push(
                 button("Debug Sync")
                     .on_press(Message::DebugSync)

@@ -25,9 +25,9 @@ pub fn view(state: MediaBarState) -> Element<'static, Message> {
     let slider_pos = state.slider_pos;
 
     let play_btn = if state.playing {
-        button("⏸ Pause").on_press(Message::PauseAudio)
+        button("Pause").on_press(Message::PauseAudio)
     } else {
-        button("▶ Play").on_press(Message::PlayAudio)
+        button("Play").on_press(Message::PlayAudio)
     };
 
     let time_str = format!(

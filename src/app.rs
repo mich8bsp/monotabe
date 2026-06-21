@@ -27,6 +27,7 @@ pub struct Monotabe {
     search: String,
     selected_song_id: Option<String>,
     form: Option<SongFormState>,
+    confirm_delete_id: Option<String>,
     status: Option<String>,
     // Audio
     audio: Option<AudioPlayer>,
@@ -63,6 +64,7 @@ impl Application for Monotabe {
                 search: String::new(),
                 selected_song_id: None,
                 form: None,
+                confirm_delete_id: None,
                 status: None,
                 audio: AudioPlayer::try_new(),
                 pdf_pages: vec![],
@@ -84,21 +86,39 @@ impl Application for Monotabe {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let resize = iced::event::listen_with(|event, _| {
-            if let iced::Event::Window(_, iced::window::Event::Resized { width, .. }) = event {
-                Some(Message::WindowResized(width))
-            } else {
-                None
+        let events = iced::event::listen_with(|event, status| {
+            use iced::keyboard::key::Named;
+            use iced::keyboard::{Event::KeyPressed, Key::Named as KNamed};
+            match event {
+                iced::Event::Window(_, iced::window::Event::Resized { width, .. }) => {
+                    Some(Message::WindowResized(width))
+                }
+                iced::Event::Keyboard(KeyPressed { key: KNamed(Named::Tab), .. })
+                    if status == iced::event::Status::Ignored =>
+                {
+                    Some(Message::FormTabPressed)
+                }
+                iced::Event::Keyboard(KeyPressed { key: KNamed(Named::ArrowLeft), .. })
+                    if status == iced::event::Status::Ignored =>
+                {
+                    Some(Message::SkipAudio(-10.0))
+                }
+                iced::Event::Keyboard(KeyPressed { key: KNamed(Named::ArrowRight), .. })
+                    if status == iced::event::Status::Ignored =>
+                {
+                    Some(Message::SkipAudio(10.0))
+                }
+                _ => None,
             }
         });
         let has_audio = self.audio.as_ref().map(|a| a.is_loaded()).unwrap_or(false);
         if has_audio {
             Subscription::batch([
-                resize,
+                events,
                 iced::time::every(Duration::from_millis(100)).map(|_| Message::AudioTick),
             ])
         } else {
-            resize
+            events
         }
     }
 
@@ -112,6 +132,7 @@ impl Application for Monotabe {
             Message::SongSelected(id) => {
                 self.selected_song_id = Some(id.clone());
                 self.form = None;
+                self.confirm_delete_id = None;
                 self.pdf_pages = vec![];
                 self.pdf_page_heights = vec![];
                 self.pdf_rendering = false;
@@ -154,13 +175,22 @@ impl Application for Monotabe {
             // ── CRUD ─────────────────────────────────────────────────────────
             Message::NewSong => {
                 self.form = Some(SongFormState::new());
+                return song_form::focus_first();
             }
             Message::EditSong(id) => {
                 if let Some(song) = self.songs.iter().find(|s| s.id == id) {
                     self.form = Some(SongFormState::from_song(song));
+                    return song_form::focus_first();
                 }
             }
+            Message::ConfirmDeleteSong(id) => {
+                self.confirm_delete_id = Some(id);
+            }
+            Message::CancelDelete => {
+                self.confirm_delete_id = None;
+            }
             Message::DeleteSong(id) => {
+                self.confirm_delete_id = None;
                 match self.store.delete_song(&id) {
                     Ok(()) => {
                         self.songs.retain(|s| s.id != id);
@@ -265,6 +295,11 @@ impl Application for Monotabe {
             Message::FormCancel => {
                 self.form = None;
             }
+            Message::FormTabPressed => {
+                if let Some(form) = &mut self.form {
+                    return song_form::tab_next_focus(&mut form.focused_field);
+                }
+            }
 
             // ── External media links ──────────────────────────────────────────
             Message::OpenUrl(url) => {
@@ -300,6 +335,15 @@ impl Application for Monotabe {
                 self.seek_target = Some(secs);
                 if let Some(audio) = self.audio.as_mut() {
                     audio.seek(Duration::from_secs_f32(secs));
+                }
+            }
+            Message::SkipAudio(delta) => {
+                if let Some(audio) = self.audio.as_mut() {
+                    let duration = audio.duration.map(|d| d.as_secs_f32()).unwrap_or(f32::MAX);
+                    let current = self.seek_target.unwrap_or_else(|| audio.position().as_secs_f32());
+                    let target = (current + delta).clamp(0.0, duration);
+                    self.seek_target = Some(target);
+                    audio.seek(Duration::from_secs_f32(target));
                 }
             }
             Message::AudioTick => {
@@ -478,6 +522,7 @@ impl Application for Monotabe {
                     self.pdf_rendering,
                     self.sync_map.is_some(),
                     self.sync_analyzing,
+                    self.confirm_delete_id.as_deref() == Some(&song.id),
                 )
             } else {
                 placeholder("Select a song")

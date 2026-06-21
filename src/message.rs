@@ -12,6 +12,8 @@ pub enum Message {
     NewSong,
     EditSong(String),
     DeleteSong(String),
+    ConfirmDeleteSong(String),
+    CancelDelete,
 
     // Form field changes
     FormTitleChanged(String),
@@ -37,6 +39,7 @@ pub enum Message {
     PauseAudio,
     ScrubAudio(f32),  // slider dragging: update display only
     SeekAudio(f32),   // slider released: perform the actual seek
+    SkipAudio(f32),   // arrow key skip: positive = forward, negative = backward
     AudioTick,
     AudioError(String),
 
@@ -60,4 +63,7 @@ pub enum Message {
 
     // Window
     WindowResized(u32),
+
+    // Form focus
+    FormTabPressed,
 }
