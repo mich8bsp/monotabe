@@ -2,3 +2,7 @@
 .env
 *.env
 config.toml
+/test_files/*.flac
+/test_files/*.mp3
+/test_files/*.m4a
+/test_files/*.wav

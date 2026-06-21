@@ -164,3 +164,97 @@ fn strip_code_fences(s: &str) -> &str {
     let s = s.strip_suffix("```").unwrap_or(s);
     s.trim()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rodio::Source;
+
+    /// End-to-end sync analysis test using test_files/martian.pdf + martian.flac.
+    /// Requires ANTHROPIC_API_KEY env var and pdftoppm to be installed.
+    /// Run with: cargo test test_sync_analysis_martian -- --nocapture
+    #[tokio::test]
+    async fn test_sync_analysis_martian() {
+        let api_key = match std::env::var("ANTHROPIC_API_KEY") {
+            Ok(k) => k,
+            Err(_) => {
+                println!("SKIP: ANTHROPIC_API_KEY not set");
+                return;
+            }
+        };
+
+        let root = env!("CARGO_MANIFEST_DIR");
+        let pdf_path = format!("{root}/test_files/martian.pdf");
+        let flac_path = format!("{root}/test_files/martian.flac");
+
+        assert!(
+            std::path::Path::new(&pdf_path).exists(),
+            "test_files/martian.pdf not found"
+        );
+        assert!(
+            std::path::Path::new(&flac_path).exists(),
+            "test_files/martian.flac not found — add the file to test_files/"
+        );
+
+        // Read duration from the flac file using rodio/symphonia
+        let duration_secs = {
+            let file = std::fs::File::open(&flac_path).expect("failed to open martian.flac");
+            let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
+                .expect("failed to decode martian.flac");
+            decoder
+                .total_duration()
+                .map(|d| d.as_secs_f32())
+                .unwrap_or_else(|| {
+                    println!("Warning: could not read duration from flac, defaulting to 300s");
+                    300.0
+                })
+        };
+        println!("Audio duration: {duration_secs:.1}s");
+
+        let result = analyze_tab_sync(
+            api_key,
+            "claude-sonnet-4-6".to_string(),
+            pdf_path,
+            "test-martian".to_string(),
+            duration_secs,
+        )
+        .await;
+
+        match &result {
+            Ok(pts) => println!("Received {} sync points", pts.len()),
+            Err(e) => println!("FAILED: {e}"),
+        }
+
+        let points = result.expect("sync analysis should succeed");
+
+        assert!(!points.is_empty(), "expected at least one sync point");
+
+        // martian.pdf has 4 pages
+        for (i, pt) in points.iter().enumerate() {
+            assert!(
+                pt.page < 4,
+                "point {i}: page {} out of range (pdf has 4 pages)",
+                pt.page
+            );
+            assert!(
+                (0.0..=1.0).contains(&pt.y_offset_px),
+                "point {i}: y_frac {} not in [0, 1]",
+                pt.y_offset_px
+            );
+            assert!(pt.time_secs >= 0.0, "point {i}: negative time_secs {}", pt.time_secs);
+            assert!(
+                pt.time_secs <= duration_secs + 5.0,
+                "point {i}: time_secs {:.1} exceeds audio duration {duration_secs:.1}",
+                pt.time_secs
+            );
+        }
+
+        println!("Sync points:");
+        for pt in &points {
+            println!(
+                "  page={} y_frac={:.3} time={:.1}s",
+                pt.page, pt.y_offset_px, pt.time_secs
+            );
+        }
+    }
+}
