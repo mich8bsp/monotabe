@@ -1,4 +1,3 @@
-use std::io::BufReader;
 use std::time::Duration;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
@@ -24,7 +23,8 @@ impl AudioPlayer {
     pub fn load(&mut self, path: String) -> Result<(), String> {
         self.player = None; // stops current audio
         let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        let source = Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
+        // Use TryFrom<File> which sets with_seekable(true) and byte_len — required for seek.
+        let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
         let total = source.total_duration();
         let player = Player::connect_new(self._sink.mixer());
         player.append(source);
