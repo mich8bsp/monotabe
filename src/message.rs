@@ -1,0 +1,54 @@
+use crate::model::song::{Instrument, InstrumentFilter, Song};
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    // Library
+    SongsLoaded(Vec<Song>),
+    SongSelected(String),
+    FilterChanged(InstrumentFilter),
+    SearchChanged(String),
+
+    // CRUD triggers
+    NewSong,
+    EditSong(String),
+    DeleteSong(String),
+
+    // Form field changes
+    FormTitleChanged(String),
+    FormArtistChanged(String),
+    FormInstrumentChanged(Instrument),
+    FormYoutubeUrlChanged(String),
+    FormSpotifyUrlChanged(String),
+    FormPdfPathChanged(String),
+    FormMp3PathChanged(String),
+
+    // File picker
+    FormPickPdf,
+    FormPickMp3,
+    FormPdfPicked(Option<String>),
+    FormMp3Picked(Option<String>),
+
+    // Form actions
+    FormSubmit,
+    FormCancel,
+
+    // Audio playback
+    PlayAudio,
+    PauseAudio,
+    SeekAudio(f32),
+    AudioTick,
+    AudioError(String),
+
+    // PDF viewer
+    PdfRendered(Vec<std::path::PathBuf>),
+    PdfError(String),
+    ScrollPdf(f32),
+
+    // External media links
+    OpenUrl(String),
+
+    // LLM tab sync
+    AnalyzeSync,
+    SyncAnalysisComplete(Vec<crate::model::sync_map::SyncPoint>),
+    SyncAnalysisFailed(String),
+}

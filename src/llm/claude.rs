@@ -1,0 +1,166 @@
+use std::path::PathBuf;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::{json, Value};
+
+use crate::model::sync_map::SyncPoint;
+
+const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const API_VERSION: &str = "2023-06-01";
+
+/// Returns ANTHROPIC_API_KEY from environment, or an error string.
+pub fn api_key() -> Result<String, String> {
+    std::env::var("ANTHROPIC_API_KEY")
+        .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())
+}
+
+/// Render PDF pages at 72 DPI (for LLM), build the Claude API request,
+/// and return parsed SyncPoints (y_frac in [0..1] scaled to display 150 DPI).
+pub async fn analyze_tab_sync(
+    api_key: String,
+    model: String,
+    pdf_path: String,
+    song_id: String,
+    audio_duration_secs: f32,
+) -> Result<Vec<SyncPoint>, String> {
+    // Render low-res pages for LLM (72 DPI to stay within API limits)
+    let llm_dir = std::env::temp_dir().join("monotabe").join(format!("{song_id}_llm"));
+    tokio::fs::create_dir_all(&llm_dir)
+        .await
+        .map_err(|e| format!("temp dir error: {e}"))?;
+
+    let prefix = llm_dir.join("p");
+    let status = tokio::process::Command::new("pdftoppm")
+        .args(["-r", "72", "-png", &pdf_path, &prefix.to_string_lossy()])
+        .status()
+        .await
+        .map_err(|e| format!("pdftoppm not found: {e}"))?;
+
+    if !status.success() {
+        return Err("pdftoppm failed during LLM render".to_string());
+    }
+
+    // Collect + sort page files
+    let pages: Vec<PathBuf> = {
+        let mut rd = tokio::fs::read_dir(&llm_dir)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut v = Vec::new();
+        while let Some(entry) = rd.next_entry().await.map_err(|e| e.to_string())? {
+            let p = entry.path();
+            if p.extension().map(|x| x == "png").unwrap_or(false) {
+                v.push(p);
+            }
+        }
+        v.sort();
+        v
+    };
+
+    let n_pages = pages.len();
+    if n_pages == 0 {
+        return Err("No pages rendered for LLM".to_string());
+    }
+
+    // Build message content: text intro + one image block per page
+    let mut content: Vec<Value> = vec![json!({
+        "type": "text",
+        "text": format!(
+            "Analyze {n_pages} tab page(s). Total audio duration: {audio_duration_secs:.1} seconds.\n\
+             Return ONLY a JSON array mapping measures to playback time. No explanation.\n\
+             Format: [{{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}, ...]\n\
+             Rules:\n\
+             - page is 0-indexed\n\
+             - y_frac is vertical position as fraction of page height (0.0=top, 1.0=bottom)\n\
+             - time_secs is the estimated playback time in seconds for that position\n\
+             - Start with {{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}\n\
+             - Add a point per measure/bar\n\
+             - Account for repeats and codas\n\
+             - End near the last page bottom with time_secs ≈ {audio_duration_secs:.1}"
+        )
+    })];
+
+    for (i, path) in pages.iter().enumerate() {
+        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+        let encoded = STANDARD.encode(&bytes);
+        content.push(json!({
+            "type": "text",
+            "text": format!("Page {i}:")
+        }));
+        content.push(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": encoded
+            }
+        }));
+    }
+
+    let body = json!({
+        "model": model,
+        "max_tokens": 8192,
+        "system": "You are a music tab analyst. Always respond with ONLY raw JSON — no markdown, no code blocks, no explanation.",
+        "messages": [{"role": "user", "content": content}]
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(API_URL)
+        .header("x-api-key", &api_key)
+        .header("anthropic-version", API_VERSION)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("API error {status}: {text}"));
+    }
+
+    let json_resp: Value = resp.json().await.map_err(|e| format!("Response parse error: {e}"))?;
+    let raw_text = json_resp["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| "No text in API response".to_string())?;
+
+    // Claude might wrap JSON in a code block; strip if needed
+    let clean = strip_code_fences(raw_text);
+
+    let raw_points: Vec<RawSyncPoint> =
+        serde_json::from_str(clean).map_err(|e| format!("JSON parse error: {e}\nRaw: {clean}"))?;
+
+    // Convert y_frac → y_offset_px at 150 DPI (standard letter: 1650px high)
+    // We scale from 72 DPI reference: page_height_72dpi ≈ 792px → at 150 DPI ≈ 1650px
+    // Since y_frac is dimensionless, no DPI scaling needed — we store y_frac directly.
+    // The auto-scroll code will multiply by actual rendered page height.
+    let points = raw_points
+        .into_iter()
+        .map(|r| SyncPoint {
+            page: r.page,
+            y_offset_px: r.y_frac, // stored as fraction; scroll code scales by page height
+            time_secs: r.time_secs,
+        })
+        .collect();
+
+    // Clean up LLM temp dir
+    let _ = tokio::fs::remove_dir_all(&llm_dir).await;
+
+    Ok(points)
+}
+
+#[derive(serde::Deserialize)]
+struct RawSyncPoint {
+    page: u32,
+    y_frac: f32,
+    time_secs: f32,
+}
+
+fn strip_code_fences(s: &str) -> &str {
+    let s = s.trim();
+    let s = s.strip_prefix("```json").unwrap_or(s);
+    let s = s.strip_prefix("```").unwrap_or(s);
+    let s = s.strip_suffix("```").unwrap_or(s);
+    s.trim()
+}
