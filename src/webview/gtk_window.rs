@@ -1,5 +1,7 @@
+use gtk::glib;
+use gtk::glib::{ControlFlow, Priority, Propagation};
 use gtk::prelude::*;
-use webkit2gtk::prelude::*;
+use webkit2gtk::{WebView, WebViewExt};
 
 pub enum WebviewCmd {
     Open(String),
@@ -20,7 +22,7 @@ impl WebviewHandle {
 /// Must be called AFTER iced has started so winit has already called XInitThreads.
 pub fn spawn() -> Result<WebviewHandle, String> {
     let (sender, receiver) =
-        glib::MainContext::channel::<WebviewCmd>(glib::PRIORITY_DEFAULT);
+        glib::MainContext::channel::<WebviewCmd>(Priority::DEFAULT);
 
     std::thread::Builder::new()
         .name("gtk-webview".into())
@@ -34,18 +36,18 @@ pub fn spawn() -> Result<WebviewHandle, String> {
             window.set_title("Monotabe — Media Player");
             window.set_default_size(960, 600);
 
-            let webview = webkit2gtk::WebView::new();
+            let webview = WebView::new();
             window.add(&webview);
 
-            // Hide on close instead of destroying, so subsequent opens reuse the window.
+            // Hide on close instead of destroying so subsequent opens reuse it.
             window.connect_delete_event(|w, _| {
                 w.hide();
-                gtk::Inhibit(true)
+                Propagation::Stop
             });
 
             let window_r = window.clone();
             let webview_r = webview.clone();
-            receiver.attach(None, move |cmd| {
+            receiver.attach(None, move |cmd: WebviewCmd| {
                 match cmd {
                     WebviewCmd::Open(url) => {
                         webview_r.load_uri(&url);
@@ -53,7 +55,7 @@ pub fn spawn() -> Result<WebviewHandle, String> {
                         window_r.present();
                     }
                 }
-                glib::Continue(true)
+                ControlFlow::Continue
             });
 
             gtk::main();
