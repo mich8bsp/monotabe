@@ -6,3 +6,4 @@ config.toml
 /test_files/*.mp3
 /test_files/*.m4a
 /test_files/*.wav
+test_files/
