@@ -38,6 +38,8 @@ pub struct Monotabe {
     // LLM sync
     sync_map: Option<TabSyncMap>,
     sync_analyzing: bool,
+    // Seek scrubbing (slider drag target before mouse release)
+    seek_target: Option<f32>,
     // Webview companion window (lazy-initialized on first OpenUrl)
     webview: Option<WebviewHandle>,
 }
@@ -66,6 +68,7 @@ impl Application for Monotabe {
                 pdf_rendering: false,
                 sync_map: None,
                 sync_analyzing: false,
+                seek_target: None,
                 webview: None,
             },
             Command::none(),
@@ -272,7 +275,11 @@ impl Application for Monotabe {
             Message::PauseAudio => {
                 if let Some(audio) = self.audio.as_mut() { audio.pause(); }
             }
+            Message::ScrubAudio(secs) => {
+                self.seek_target = Some(secs);
+            }
             Message::SeekAudio(secs) => {
+                self.seek_target = None;
                 if let Some(audio) = self.audio.as_mut() {
                     audio.seek(Duration::from_secs_f32(secs));
                 }
@@ -386,11 +393,15 @@ impl Application for Monotabe {
             song_form::view(form)
         } else if let Some(id) = &self.selected_song_id {
             if let Some(song) = self.songs.iter().find(|s| &s.id == id) {
-                let bar = self.audio.as_ref().map(|a| MediaBarState {
-                    playing: a.is_playing(),
-                    position: a.position(),
-                    duration: a.duration,
-                    loaded: a.is_loaded(),
+                let bar = self.audio.as_ref().map(|a| {
+                    let pos_secs = a.position().as_secs_f32();
+                    MediaBarState {
+                        playing: a.is_playing(),
+                        position: a.position(),
+                        duration: a.duration,
+                        loaded: a.is_loaded(),
+                        slider_pos: self.seek_target.unwrap_or(pos_secs),
+                    }
                 });
                 song_detail::view(
                     song,

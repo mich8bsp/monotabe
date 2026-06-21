@@ -35,7 +35,8 @@ pub enum Message {
     // Audio playback
     PlayAudio,
     PauseAudio,
-    SeekAudio(f32),
+    ScrubAudio(f32),  // slider dragging: update display only
+    SeekAudio(f32),   // slider released: perform the actual seek
     AudioTick,
     AudioError(String),
 

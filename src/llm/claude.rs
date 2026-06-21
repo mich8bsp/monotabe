@@ -31,7 +31,7 @@ pub async fn analyze_tab_sync(
 
     let prefix = llm_dir.join("p");
     let status = tokio::process::Command::new("pdftoppm")
-        .args(["-r", "72", "-png", &pdf_path, &prefix.to_string_lossy()])
+        .args(["-r", "100", "-png", &pdf_path, &prefix.to_string_lossy()])
         .status()
         .await
         .map_err(|e| format!("pdftoppm not found: {e}"))?;
@@ -65,17 +65,39 @@ pub async fn analyze_tab_sync(
     let mut content: Vec<Value> = vec![json!({
         "type": "text",
         "text": format!(
-            "Analyze {n_pages} tab page(s). Total audio duration: {audio_duration_secs:.1} seconds.\n\
-             Return ONLY a JSON array mapping measures to playback time. No explanation.\n\
-             Format: [{{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}, ...]\n\
+            "You are analyzing {n_pages} page(s) of a guitar/bass tablature PDF.\n\
+             The audio recording is exactly {audio_duration_secs:.1} seconds long.\n\
+             \n\
+             Your job is to produce a precise timing map so the tab can auto-scroll in sync with the audio.\n\
+             \n\
+             STEP 1 — Count measures:\n\
+             Look at each page carefully. In guitar/bass tab, measures are separated by VERTICAL BAR LINES\n\
+             that cross all 6 (guitar) or 4 (bass) strings. Count every measure on every page.\n\
+             \n\
+             STEP 2 — Find tempo:\n\
+             Look for a BPM or tempo marking (e.g. '♩= 120', 'q=90', 'Tempo: 100 BPM') near the top of page 0.\n\
+             If found: seconds_per_measure = (60.0 / BPM) * beats_per_bar (beats_per_bar is usually 4).\n\
+             If NOT found: seconds_per_measure = {audio_duration_secs:.1} / total_measure_count.\n\
+             \n\
+             STEP 3 — Compute y positions:\n\
+             For each measure, compute y_frac = the vertical center of that measure's staff row,\n\
+             as a fraction of the full page height (0.0 = very top, 1.0 = very bottom).\n\
+             Measures within the same staff row share a y_frac. Rows are stacked vertically down the page.\n\
+             DO NOT assign y_frac values uniformly — base them on actual visual row positions in the image.\n\
+             \n\
+             STEP 4 — Handle repeats:\n\
+             If the tab has repeat signs (||: and :||) or a D.C./D.S., include repeated sections with\n\
+             the correct time_secs for each pass.\n\
+             \n\
+             Return ONLY a raw JSON array, one object per measure, no explanation, no markdown:\n\
+             [{{\"page\":0,\"y_frac\":0.05,\"time_secs\":0.0}}, ...]\n\
+             \n\
              Rules:\n\
              - page is 0-indexed\n\
-             - y_frac is vertical position as fraction of page height (0.0=top, 1.0=bottom)\n\
-             - time_secs is the estimated playback time in seconds for that position\n\
-             - Start with {{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}\n\
-             - Add a point per measure/bar\n\
-             - Account for repeats and codas\n\
-             - End near the last page bottom with time_secs ≈ {audio_duration_secs:.1}"
+             - First entry MUST be {{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}\n\
+             - time_secs must be strictly increasing\n\
+             - Last entry time_secs must be close to {audio_duration_secs:.1}\n\
+             - y_frac values MUST reflect the actual visual row positions, not be evenly spaced"
         )
     })];
 

@@ -31,6 +31,12 @@ impl TabSyncMap {
         }
         let before = &self.points[idx - 1];
         let after = &self.points[idx];
+        // Don't interpolate across page boundaries — the y_frac would go backwards.
+        // Hold at `before` position; the hard jump to the next page happens naturally
+        // when time crosses `after.time_secs` and idx advances.
+        if before.page != after.page {
+            return Some((before.page, before.y_offset_px));
+        }
         let t = (time_secs - before.time_secs) / (after.time_secs - before.time_secs);
         Some((before.page, before.y_offset_px + t * (after.y_offset_px - before.y_offset_px)))
     }
