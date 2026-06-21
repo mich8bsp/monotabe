@@ -40,7 +40,10 @@ pub fn spawn() -> Result<WebviewHandle, String> {
             window.add(&webview);
 
             // Hide on close instead of destroying so subsequent opens reuse it.
-            window.connect_delete_event(|w, _| {
+            // Load about:blank to stop any playing audio/video.
+            let webview_hide = webview.clone();
+            window.connect_delete_event(move |w, _| {
+                webview_hide.load_uri("about:blank");
                 w.hide();
                 Propagation::Stop
             });
