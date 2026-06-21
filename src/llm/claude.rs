@@ -128,6 +128,11 @@ pub async fn analyze_tab_sync(
     // Claude might wrap JSON in a code block; strip if needed
     let clean = strip_code_fences(raw_text);
 
+    // Claude occasionally emits `"key">value` instead of `"key":value` when
+    // expressing an approximate number. Fix it before parsing.
+    let fixed = clean.replace("\">", "\":");
+    let clean = fixed.as_str();
+
     let raw_points: Vec<RawSyncPoint> =
         serde_json::from_str(clean).map_err(|e| format!("JSON parse error: {e}\nRaw: {clean}"))?;
 
