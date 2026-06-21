@@ -194,7 +194,7 @@ impl Application for Monotabe {
             Message::FormPickMp3 => {
                 return Command::perform(
                     rfd::AsyncFileDialog::new()
-                        .add_filter("Audio", &["mp3", "ogg", "flac", "wav"])
+                        .add_filter("Audio", &["mp3", "m4a", "flac", "ogg", "wav"])
                         .pick_file(),
                     |h| Message::FormMp3Picked(h.map(|f| f.path().to_string_lossy().to_string())),
                 );

@@ -103,7 +103,7 @@ pub fn view(form: &SongFormState) -> Element<'_, Message> {
     .align_items(iced::Alignment::Center);
 
     let mp3_row = row![
-        text_input("MP3 file path…", &form.mp3_path)
+        text_input("Audio file path…", &form.mp3_path)
             .on_input(Message::FormMp3PathChanged)
             .padding(6)
             .width(Length::Fill),
@@ -137,7 +137,7 @@ pub fn view(form: &SongFormState) -> Element<'_, Message> {
         labeled("YouTube URL", text_input("https://youtube.com/…", &form.youtube_url).on_input(Message::FormYoutubeUrlChanged).padding(6)),
         labeled("Spotify URL", text_input("https://open.spotify.com/…", &form.spotify_url).on_input(Message::FormSpotifyUrlChanged).padding(6)),
         label_widget("Tab PDF", pdf_row),
-        label_widget("Audio MP3", mp3_row),
+        label_widget("Audio file", mp3_row),
         actions,
     ]
     .spacing(14)

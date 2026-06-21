@@ -66,7 +66,7 @@ pub fn view<'a>(
         }
     }
 
-    // Sync analysis button (only when both PDF and MP3 are attached)
+    // Sync analysis button (only when both PDF and audio are attached)
     let can_analyze = song.pdf_path.is_some() && song.mp3_path.is_some();
     if can_analyze {
         let sync_label = if sync_analyzing {
