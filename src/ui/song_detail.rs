@@ -84,13 +84,16 @@ pub fn view<'a>(
                 .padding([5, 14])
                 .style(iced::theme::Button::Primary)
         };
-        let sync_row = if has_sync_map && !sync_analyzing {
-            row![sync_btn, text("✓ Sync active").size(12)]
-                .spacing(8)
-                .align_items(iced::Alignment::Center)
-        } else {
-            row![sync_btn].spacing(8)
-        };
+        let mut sync_row = row![sync_btn].spacing(8).align_items(iced::Alignment::Center);
+        if has_sync_map && !sync_analyzing {
+            sync_row = sync_row.push(text("✓ Sync active").size(12));
+            sync_row = sync_row.push(
+                button("Debug Sync")
+                    .on_press(Message::DebugSync)
+                    .padding([5, 12])
+                    .style(iced::theme::Button::Secondary),
+            );
+        }
         top = top.push(sync_row);
     }
 

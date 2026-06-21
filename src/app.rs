@@ -7,7 +7,7 @@ use iced::{Application, Command, Element, Length, Subscription, Theme};
 
 use crate::audio::player::AudioPlayer;
 use crate::db::store::Store;
-use crate::llm::claude;
+use crate::sync_gen;
 use crate::message::Message;
 use crate::model::song::{InstrumentFilter, Song};
 use crate::model::sync_map::TabSyncMap;
@@ -18,7 +18,6 @@ use crate::ui::{library, song_detail, song_form};
 use crate::ui::song_form::SongFormState;
 use crate::webview::gtk_window::WebviewHandle;
 
-const LLM_MODEL: &str = "claude-sonnet-4-6";
 const PAGE_GAP_PX: f32 = 4.0;
 
 pub struct Monotabe {
@@ -33,8 +32,11 @@ pub struct Monotabe {
     audio: Option<AudioPlayer>,
     // PDF viewer
     pdf_pages: Vec<PathBuf>,
-    pdf_page_heights: Vec<f32>,
+    pdf_page_heights: Vec<f32>, // PNG pixel height
+    pdf_page_widths: Vec<f32>,  // PNG pixel width
     pdf_rendering: bool,
+    // Window width — used to compute displayed image heights for scroll math
+    window_width: f32,
     // LLM sync
     sync_map: Option<TabSyncMap>,
     sync_analyzing: bool,
@@ -65,7 +67,9 @@ impl Application for Monotabe {
                 audio: AudioPlayer::try_new(),
                 pdf_pages: vec![],
                 pdf_page_heights: vec![],
+                pdf_page_widths: vec![],
                 pdf_rendering: false,
+                window_width: 1400.0,
                 sync_map: None,
                 sync_analyzing: false,
                 seek_target: None,
@@ -80,11 +84,21 @@ impl Application for Monotabe {
     }
 
     fn subscription(&self) -> Subscription<Message> {
+        let resize = iced::event::listen_with(|event, _| {
+            if let iced::Event::Window(_, iced::window::Event::Resized { width, .. }) = event {
+                Some(Message::WindowResized(width))
+            } else {
+                None
+            }
+        });
         let has_audio = self.audio.as_ref().map(|a| a.is_loaded()).unwrap_or(false);
         if has_audio {
-            iced::time::every(Duration::from_millis(100)).map(|_| Message::AudioTick)
+            Subscription::batch([
+                resize,
+                iced::time::every(Duration::from_millis(100)).map(|_| Message::AudioTick),
+            ])
         } else {
-            Subscription::none()
+            resize
         }
     }
 
@@ -103,6 +117,7 @@ impl Application for Monotabe {
                 self.pdf_rendering = false;
                 self.sync_map = None;
                 self.sync_analyzing = false;
+                self.seek_target = None;
 
                 if let Some(song) = self.songs.iter().find(|s| s.id == id) {
                     // Load MP3
@@ -304,8 +319,13 @@ impl Application for Monotabe {
                     if audio.is_playing() {
                         if let Some(sync_map) = &self.sync_map {
                             let pos_secs = audio.position().as_secs_f32();
-                            if let Some((page, y_frac)) = sync_map.scroll_position_at(pos_secs) {
-                                let y = self.absolute_y(page as usize, y_frac);
+                            if let Some(y) = sync_scroll_y(
+                                &sync_map.points,
+                                pos_secs,
+                                &self.pdf_page_heights,
+                                &self.pdf_page_widths,
+                                self.window_width,
+                            ) {
                                 return scrollable::scroll_to(
                                     pdf_viewer::viewer_id(),
                                     scrollable::AbsoluteOffset { x: 0.0, y },
@@ -321,7 +341,9 @@ impl Application for Monotabe {
 
             // ── PDF viewer ────────────────────────────────────────────────────
             Message::PdfRendered(pages) => {
-                self.pdf_page_heights = pages.iter().map(|p| png_height(p)).collect();
+                let dims: Vec<(f32, f32)> = pages.iter().map(|p| png_dimensions(p)).collect();
+                self.pdf_page_widths  = dims.iter().map(|&(w, _)| w).collect();
+                self.pdf_page_heights = dims.iter().map(|&(_, h)| h).collect();
                 self.pdf_pages = pages;
                 self.pdf_rendering = false;
             }
@@ -336,7 +358,7 @@ impl Application for Monotabe {
                 );
             }
 
-            // ── LLM tab sync ──────────────────────────────────────────────────
+            // ── Tab sync (image-based, no LLM) ───────────────────────────────
             Message::AnalyzeSync => {
                 let song_id = match &self.selected_song_id {
                     Some(id) => id.clone(),
@@ -354,13 +376,9 @@ impl Application for Monotabe {
                     }
                 };
                 let dur_secs = audio_dur.map(|d| d.as_secs_f32()).unwrap_or(300.0);
-                let api_key = match claude::api_key() {
-                    Ok(k) => k,
-                    Err(e) => { self.status = Some(e); return Command::none(); }
-                };
                 self.sync_analyzing = true;
                 return Command::perform(
-                    claude::analyze_tab_sync(api_key, LLM_MODEL.to_string(), pdf_path, song_id, dur_secs),
+                    sync_gen::generate_simple_sync(pdf_path, song_id, dur_secs),
                     |r| match r {
                         Ok(pts) => Message::SyncAnalysisComplete(pts),
                         Err(e) => Message::SyncAnalysisFailed(e),
@@ -373,19 +391,59 @@ impl Application for Monotabe {
                     let map = TabSyncMap {
                         song_id: id.clone(),
                         points,
-                        model_used: LLM_MODEL.to_string(),
+                        model_used: "simple-equal-division".to_string(),
                     };
                     if let Err(e) = self.store.save_sync_map(&map) {
                         self.status = Some(format!("Failed to save sync map: {e}"));
                     } else {
                         self.sync_map = Some(map);
-                        self.status = Some("Sync analysis complete — auto-scroll active".to_string());
+                        self.status = Some("Sync ready — auto-scroll active".to_string());
                     }
                 }
             }
             Message::SyncAnalysisFailed(e) => {
                 self.sync_analyzing = false;
                 self.status = Some(format!("Sync analysis failed: {e}"));
+            }
+
+            // ── Sync debug overlay ────────────────────────────────────────────
+            Message::DebugSync => {
+                let points = match &self.sync_map {
+                    Some(m) => m.points.clone(),
+                    None => {
+                        self.status = Some("No sync map — run Analyze Sync first".to_string());
+                        return Command::none();
+                    }
+                };
+                let song = self.selected_song_id.as_ref()
+                    .and_then(|id| self.songs.iter().find(|s| &s.id == id));
+                let song_title = song.map(|s| s.title.clone()).unwrap_or_default();
+                let pdf_path = song.and_then(|s| s.pdf_path.clone());
+                return Command::perform(
+                    crate::debug::generate_sync_debug(
+                        song_title,
+                        self.pdf_pages.clone(),
+                        self.pdf_page_heights.clone(),
+                        points,
+                        pdf_path,
+                    ),
+                    |r| match r {
+                        Ok(path) => Message::SyncDebugReady(path),
+                        Err(e) => Message::SyncDebugFailed(e),
+                    },
+                );
+            }
+            Message::SyncDebugReady(path) => {
+                if let Err(e) = open::that(&path) {
+                    self.status = Some(format!("Could not open debug file: {e}"));
+                }
+            }
+            Message::SyncDebugFailed(e) => {
+                self.status = Some(format!("Debug export failed: {e}"));
+            }
+
+            Message::WindowResized(w) => {
+                self.window_width = w as f32;
             }
         }
         Command::none()
@@ -449,30 +507,80 @@ impl Application for Monotabe {
     }
 }
 
-/// Absolute scroll Y position for a given page index and y_frac within that page.
-fn absolute_y_of(page_heights: &[f32], page: usize, y_frac: f32) -> f32 {
-    let offset: f32 = page_heights.iter().take(page).copied().sum::<f32>()
-        + page as f32 * PAGE_GAP_PX;
-    let h = page_heights.get(page).copied().unwrap_or(1650.0);
-    offset + y_frac * h
+/// Interpolate sync points in absolute-Y space so cross-page transitions scroll
+/// smoothly (the pages are a continuous vertical strip in the scrollable widget).
+fn sync_scroll_y(
+    points: &[crate::model::sync_map::SyncPoint],
+    time_secs: f32,
+    page_heights: &[f32],
+    page_widths: &[f32],
+    window_width: f32,
+) -> Option<f32> {
+    if points.is_empty() {
+        return None;
+    }
+    let idx = points.partition_point(|p| p.time_secs <= time_secs);
+    if idx == 0 {
+        let p = &points[0];
+        return Some(absolute_y_of(page_heights, page_widths, window_width, p.page as usize, p.y_offset_px));
+    }
+    if idx >= points.len() {
+        let p = &points[points.len() - 1];
+        return Some(absolute_y_of(page_heights, page_widths, window_width, p.page as usize, p.y_offset_px));
+    }
+    let before = &points[idx - 1];
+    let after  = &points[idx];
+    let y0 = absolute_y_of(page_heights, page_widths, window_width, before.page as usize, before.y_offset_px);
+    let y1 = absolute_y_of(page_heights, page_widths, window_width, after.page  as usize, after.y_offset_px);
+    let t = ((time_secs - before.time_secs) / (after.time_secs - before.time_secs)).clamp(0.0, 1.0);
+    Some(y0 + t * (y1 - y0))
+}
+
+// Width of UI chrome that sits to the left of (or inside) the PDF panel and is
+// NOT part of the scrollable content area.  Used to estimate the displayed image
+// width so that scroll positions are in iced's layout coordinate system.
+//   280 library panel + 1 rule + 8+8 container padding = 297 px
+const PANEL_CHROME_PX: f32 = 297.0;
+
+/// Absolute scroll Y for a given (page, y_frac).
+/// Images are rendered with Length::Fill so their displayed height scales with
+/// the available panel width.  We replicate that scaling here so that the scroll
+/// targets land at the correct position in iced's layout.
+fn absolute_y_of(
+    page_heights: &[f32],
+    page_widths: &[f32],
+    window_width: f32,
+    page: usize,
+    y_frac: f32,
+) -> f32 {
+    let available_width = (window_width - PANEL_CHROME_PX).max(1.0);
+    let displayed_height = |i: usize| -> f32 {
+        let png_h = page_heights.get(i).copied().unwrap_or(1650.0);
+        let png_w = page_widths.get(i).copied().unwrap_or(1.0).max(1.0);
+        png_h * (available_width / png_w)
+    };
+    let offset: f32 = (0..page).map(|i| displayed_height(i) + PAGE_GAP_PX).sum();
+    offset + y_frac * displayed_height(page)
 }
 
 impl Monotabe {
     fn absolute_y(&self, page: usize, y_frac: f32) -> f32 {
-        absolute_y_of(&self.pdf_page_heights, page, y_frac)
+        absolute_y_of(&self.pdf_page_heights, &self.pdf_page_widths, self.window_width, page, y_frac)
     }
 }
 
-/// Read PNG header to get image height (bytes 20-23 in IHDR). Falls back to 1650.
-fn png_height(path: &Path) -> f32 {
-    (|| -> Option<f32> {
+/// Read PNG IHDR to get (width, height) in pixels. Falls back to (1240, 1650).
+fn png_dimensions(path: &Path) -> (f32, f32) {
+    (|| -> Option<(f32, f32)> {
         let mut file = std::fs::File::open(path).ok()?;
         let mut hdr = [0u8; 24];
         file.read_exact(&mut hdr).ok()?;
         if &hdr[0..8] != b"\x89PNG\r\n\x1a\n" { return None; }
-        Some(u32::from_be_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]) as f32)
+        let w = u32::from_be_bytes([hdr[16], hdr[17], hdr[18], hdr[19]]) as f32;
+        let h = u32::from_be_bytes([hdr[20], hdr[21], hdr[22], hdr[23]]) as f32;
+        Some((w, h))
     })()
-    .unwrap_or(1650.0)
+    .unwrap_or((1240.0, 1650.0))
 }
 
 fn placeholder(msg: &str) -> Element<'_, Message> {

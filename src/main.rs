@@ -1,10 +1,12 @@
 mod app;
 mod audio;
 mod db;
+mod debug;
 mod llm;
 mod message;
 mod model;
 mod pdf;
+mod sync_gen;
 mod ui;
 mod webview;
 

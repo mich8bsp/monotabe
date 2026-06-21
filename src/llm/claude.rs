@@ -4,6 +4,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 
 use crate::model::sync_map::SyncPoint;
+use crate::pdf::tab_detector;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2023-06-01";
@@ -14,8 +15,9 @@ pub fn api_key() -> Result<String, String> {
         .map_err(|_| "ANTHROPIC_API_KEY environment variable not set".to_string())
 }
 
-/// Render PDF pages at 72 DPI (for LLM), build the Claude API request,
-/// and return parsed SyncPoints (y_frac in [0..1] scaled to display 150 DPI).
+/// Render PDF pages at 100 DPI, detect tab row y-positions from the images, then
+/// ask the LLM only for timing (measures per row, tempo, repeats).
+/// Returns SyncPoints with y_frac stored in y_offset_px (scroll code scales by page height).
 pub async fn analyze_tab_sync(
     api_key: String,
     model: String,
@@ -23,7 +25,7 @@ pub async fn analyze_tab_sync(
     song_id: String,
     audio_duration_secs: f32,
 ) -> Result<Vec<SyncPoint>, String> {
-    // Render low-res pages for LLM (72 DPI to stay within API limits)
+    // Render pages at 100 DPI
     let llm_dir = std::env::temp_dir().join("monotabe").join(format!("{song_id}_llm"));
     tokio::fs::create_dir_all(&llm_dir)
         .await
@@ -61,60 +63,86 @@ pub async fn analyze_tab_sync(
         return Err("No pages rendered for LLM".to_string());
     }
 
-    // Build message content: text intro + one image block per page
-    let mut content: Vec<Value> = vec![json!({
-        "type": "text",
-        "text": format!(
+    // Detect tab row y positions from images (blocking, but images are small).
+    // page_systems[page][row] = TabSystem { scroll_anchor, string_center }
+    // We give the LLM string_center (so it can visually locate the row in the image)
+    // and use scroll_anchor when building SyncPoints (so the viewport scrolls to show
+    // chord names at the top, not just the middle of the string band).
+    let page_systems: Vec<Vec<tab_detector::TabSystem>> = pages
+        .iter()
+        .map(|p| tab_detector::detect_tab_systems(p))
+        .collect();
+
+    let total_detected: usize = page_systems.iter().map(|r| r.len()).sum();
+    let has_detection = total_detected > 0;
+
+    // Build the prompt
+    let intro = if has_detection {
+        // Primary path: we know the y positions, ask LLM only for timing.
+        // Use string_center so the LLM can find the row visually in the image.
+        let mut layout = String::new();
+        for (i, systems) in page_systems.iter().enumerate() {
+            if systems.is_empty() {
+                layout.push_str(&format!("Page {i}: no tab rows detected\n"));
+            } else {
+                layout.push_str(&format!("Page {i} — {} tab row(s):\n", systems.len()));
+                for (j, s) in systems.iter().enumerate() {
+                    layout.push_str(&format!("  Row {}: y_frac={:.4}\n", j + 1, s.string_center));
+                }
+            }
+        }
+        format!(
             "You are analyzing {n_pages} page(s) of a guitar/bass tablature PDF.\n\
-             The audio recording is exactly {audio_duration_secs:.1} seconds long.\n\
+             Audio duration: {audio_duration_secs:.1} seconds.\n\
              \n\
-             Your job is to produce a precise timing map so the tab can auto-scroll in sync with the audio.\n\
+             The tab row positions have already been measured from the images:\n\
+             {layout}\n\
+             YOUR ONLY JOB is to determine TIMING for each measure:\n\
+             1. Count measures in each row (vertical bar lines crossing all strings).\n\
+             2. Find any tempo marking (e.g. '♩= 120', 'q = 90').\n\
+                If found: secs_per_measure = (60 / BPM) * beats_per_bar (usually 4).\n\
+                If not found: secs_per_measure = {audio_duration_secs:.1} / total_measure_count.\n\
+             3. Assign time_secs to each measure sequentially from 0.0.\n\
+                All measures in the same row get the row's y_frac from the list above.\n\
+             4. If repeat signs (||: :||) or D.C./D.S. are present, include repeated passes.\n\
              \n\
-             STEP 1 — Count measures:\n\
-             Look at each page carefully. In guitar/bass tab, measures are separated by VERTICAL BAR LINES\n\
-             that cross all 6 (guitar) or 4 (bass) strings. Count every measure on every page.\n\
-             \n\
-             STEP 2 — Find tempo:\n\
-             Look for a BPM or tempo marking (e.g. '♩= 120', 'q=90', 'Tempo: 100 BPM') near the top of page 0.\n\
-             If found: seconds_per_measure = (60.0 / BPM) * beats_per_bar (beats_per_bar is usually 4).\n\
-             If NOT found: seconds_per_measure = {audio_duration_secs:.1} / total_measure_count.\n\
-             \n\
-             STEP 3 — Compute y positions:\n\
-             For each measure, compute y_frac = the vertical center of that measure's staff row,\n\
-             as a fraction of the full page height (0.0 = very top, 1.0 = very bottom).\n\
-             Measures within the same staff row share a y_frac. Rows are stacked vertically down the page.\n\
-             DO NOT assign y_frac values uniformly — base them on actual visual row positions in the image.\n\
-             \n\
-             STEP 4 — Handle repeats:\n\
-             If the tab has repeat signs (||: and :||) or a D.C./D.S., include repeated sections with\n\
-             the correct time_secs for each pass.\n\
-             \n\
-             Return ONLY a raw JSON array, one object per measure, no explanation, no markdown:\n\
-             [{{\"page\":0,\"y_frac\":0.05,\"time_secs\":0.0}}, ...]\n\
+             Return ONLY a raw JSON array — one object per measure:\n\
+             [{{\"page\":0,\"row\":1,\"time_secs\":0.0}}, ...]\n\
              \n\
              Rules:\n\
-             - page is 0-indexed\n\
-             - First entry MUST be {{\"page\":0,\"y_frac\":0.0,\"time_secs\":0.0}}\n\
+             - page is 0-indexed; row is 1-indexed per page (matching the list above)\n\
+             - First entry MUST have time_secs=0.0\n\
              - time_secs must be strictly increasing\n\
-             - Last entry time_secs must be close to {audio_duration_secs:.1}\n\
-             - y_frac values MUST reflect the actual visual row positions, not be evenly spaced"
+             - Last entry time_secs must be close to {audio_duration_secs:.1}"
         )
-    })];
+    } else {
+        // Fallback: detection failed, ask LLM to estimate y positions
+        format!(
+            "You are analyzing {n_pages} page(s) of a guitar/bass tablature PDF.\n\
+             Audio duration: {audio_duration_secs:.1} seconds.\n\
+             \n\
+             A tab row is a FULL-WIDTH band of exactly 6 parallel horizontal lines\n\
+             (4 for bass) with fret numbers on them. Chord diagrams (small grid boxes\n\
+             near the top of the page) are NOT tab rows. Title/header text is NOT a tab row.\n\
+             \n\
+             For each measure emit page (0-indexed), y_frac (0.0=top, 1.0=bottom of that\n\
+             page image; use the vertical center of the 6 string lines), and time_secs.\n\
+             The first tab row y_frac is typically 0.3–0.6 because headers come first.\n\
+             \n\
+             Return ONLY raw JSON: [{{\"page\":0,\"y_frac\":0.42,\"time_secs\":0.0}}, ...]\n\
+             First time_secs=0.0, strictly increasing, last ≈ {audio_duration_secs:.1}."
+        )
+    };
+
+    let mut content: Vec<Value> = vec![json!({ "type": "text", "text": intro })];
 
     for (i, path) in pages.iter().enumerate() {
         let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
         let encoded = STANDARD.encode(&bytes);
-        content.push(json!({
-            "type": "text",
-            "text": format!("Page {i}:")
-        }));
+        content.push(json!({ "type": "text", "text": format!("Page {i}:") }));
         content.push(json!({
             "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": encoded
-            }
+            "source": { "type": "base64", "media_type": "image/png", "data": encoded }
         }));
     }
 
@@ -142,39 +170,50 @@ pub async fn analyze_tab_sync(
         return Err(format!("API error {status}: {text}"));
     }
 
-    let json_resp: Value = resp.json().await.map_err(|e| format!("Response parse error: {e}"))?;
+    let json_resp: Value =
+        resp.json().await.map_err(|e| format!("Response parse error: {e}"))?;
     let raw_text = json_resp["content"][0]["text"]
         .as_str()
         .ok_or_else(|| "No text in API response".to_string())?;
 
-    // Claude might wrap JSON in a code block; strip if needed
     let clean = strip_code_fences(raw_text);
-
-    // Claude occasionally emits `"key">value` instead of `"key":value` when
-    // expressing an approximate number. Fix it before parsing.
     let fixed = clean.replace("\">", "\":");
     let clean = fixed.as_str();
 
-    let raw_points: Vec<RawSyncPoint> =
-        serde_json::from_str(clean).map_err(|e| format!("JSON parse error: {e}\nRaw: {clean}"))?;
+    let points: Vec<SyncPoint> = if has_detection {
+        let timing: Vec<TimingPoint> = serde_json::from_str(clean)
+            .map_err(|e| format!("JSON parse error: {e}\nRaw: {clean}"))?;
+        timing
+            .into_iter()
+            .filter_map(|tp| {
+                let page_idx = tp.page as usize;
+                let row_idx = (tp.row as usize).saturating_sub(1); // 1-indexed → 0-indexed
+                // Use scroll_anchor (not string_center) so the viewport scrolls to
+                // show chord names at the top, not the middle of the string band.
+                let y_frac = page_systems.get(page_idx)?.get(row_idx)?.scroll_anchor;
+                Some(SyncPoint { page: tp.page, y_offset_px: y_frac, time_secs: tp.time_secs })
+            })
+            .collect()
+    } else {
+        let raw: Vec<RawSyncPoint> = serde_json::from_str(clean)
+            .map_err(|e| format!("JSON parse error: {e}\nRaw: {clean}"))?;
+        raw.into_iter()
+            .map(|r| SyncPoint { page: r.page, y_offset_px: r.y_frac, time_secs: r.time_secs })
+            .collect()
+    };
 
-    // Convert y_frac → y_offset_px at 150 DPI (standard letter: 1650px high)
-    // We scale from 72 DPI reference: page_height_72dpi ≈ 792px → at 150 DPI ≈ 1650px
-    // Since y_frac is dimensionless, no DPI scaling needed — we store y_frac directly.
-    // The auto-scroll code will multiply by actual rendered page height.
-    let points = raw_points
-        .into_iter()
-        .map(|r| SyncPoint {
-            page: r.page,
-            y_offset_px: r.y_frac, // stored as fraction; scroll code scales by page height
-            time_secs: r.time_secs,
-        })
-        .collect();
-
-    // Clean up LLM temp dir
     let _ = tokio::fs::remove_dir_all(&llm_dir).await;
 
     Ok(points)
+}
+
+// Response structs
+
+#[derive(serde::Deserialize)]
+struct TimingPoint {
+    page: u32,
+    row: u32,
+    time_secs: f32,
 }
 
 #[derive(serde::Deserialize)]
@@ -223,7 +262,6 @@ mod tests {
             "test_files/martian.flac not found — add the file to test_files/"
         );
 
-        // Read duration from the flac file using rodio/symphonia
         let duration_secs = {
             let file = std::fs::File::open(&flac_path).expect("failed to open martian.flac");
             let decoder = rodio::Decoder::new(std::io::BufReader::new(file))
@@ -256,13 +294,8 @@ mod tests {
 
         assert!(!points.is_empty(), "expected at least one sync point");
 
-        // martian.pdf has 4 pages
         for (i, pt) in points.iter().enumerate() {
-            assert!(
-                pt.page < 4,
-                "point {i}: page {} out of range (pdf has 4 pages)",
-                pt.page
-            );
+            assert!(pt.page < 4, "point {i}: page {} out of range", pt.page);
             assert!(
                 (0.0..=1.0).contains(&pt.y_offset_px),
                 "point {i}: y_frac {} not in [0, 1]",

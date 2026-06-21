@@ -52,4 +52,12 @@ pub enum Message {
     AnalyzeSync,
     SyncAnalysisComplete(Vec<crate::model::sync_map::SyncPoint>),
     SyncAnalysisFailed(String),
+
+    // Sync debug overlay
+    DebugSync,
+    SyncDebugReady(String),
+    SyncDebugFailed(String),
+
+    // Window
+    WindowResized(u32),
 }
