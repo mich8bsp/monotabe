@@ -80,6 +80,7 @@
 
 ## Runtime Requirements
 - **poppler-utils**: `sudo apt install poppler-utils` (provides `pdftoppm`)
+- **webkit2gtk + GTK3**: `sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev` (for YouTube/Spotify companion window)
 - **ANTHROPIC_API_KEY**: must be set in environment for Analyze Sync to work
 - **Audio output device**: required for MP3 playback
 

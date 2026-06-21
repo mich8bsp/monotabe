@@ -6,6 +6,7 @@ mod message;
 mod model;
 mod pdf;
 mod ui;
+mod webview;
 
 use app::Monotabe;
 use iced::{Application, Settings};

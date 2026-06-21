@@ -16,6 +16,7 @@ use crate::ui::media_bar::MediaBarState;
 use crate::ui::pdf_viewer;
 use crate::ui::{library, song_detail, song_form};
 use crate::ui::song_form::SongFormState;
+use crate::webview::gtk_window::WebviewHandle;
 
 const LLM_MODEL: &str = "claude-sonnet-4-6";
 const PAGE_GAP_PX: f32 = 4.0;
@@ -37,6 +38,8 @@ pub struct Monotabe {
     // LLM sync
     sync_map: Option<TabSyncMap>,
     sync_analyzing: bool,
+    // Webview companion window (lazy-initialized on first OpenUrl)
+    webview: Option<WebviewHandle>,
 }
 
 impl Application for Monotabe {
@@ -63,6 +66,7 @@ impl Application for Monotabe {
                 pdf_rendering: false,
                 sync_map: None,
                 sync_analyzing: false,
+                webview: None,
             },
             Command::none(),
         )
@@ -246,7 +250,19 @@ impl Application for Monotabe {
 
             // ── External media links ──────────────────────────────────────────
             Message::OpenUrl(url) => {
-                std::thread::spawn(move || { let _ = open::that(url); });
+                // Lazy-init the GTK webview thread on first use (winit has
+                // already called XInitThreads by the time iced is running).
+                if self.webview.is_none() {
+                    match crate::webview::gtk_window::spawn() {
+                        Ok(handle) => self.webview = Some(handle),
+                        Err(e) => {
+                            self.status = Some(format!("Webview unavailable: {e}"));
+                            std::thread::spawn(move || { let _ = open::that(url); });
+                            return Command::none();
+                        }
+                    }
+                }
+                self.webview.as_ref().unwrap().open(url);
             }
 
             // ── Audio playback ────────────────────────────────────────────────
