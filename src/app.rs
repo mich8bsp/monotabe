@@ -279,7 +279,10 @@ impl Application for Monotabe {
                 self.seek_target = Some(secs);
             }
             Message::SeekAudio(secs) => {
-                self.seek_target = None;
+                // Keep seek_target set so the slider doesn't snap back while
+                // rodio processes the seek. AudioTick will clear it once
+                // audio.position() has caught up.
+                self.seek_target = Some(secs);
                 if let Some(audio) = self.audio.as_mut() {
                     audio.seek(Duration::from_secs_f32(secs));
                 }
@@ -289,6 +292,13 @@ impl Application for Monotabe {
                     if audio.has_finished() {
                         if let Some(a) = self.audio.as_mut() { a.pause(); }
                         return Command::none();
+                    }
+                    // Clear seek_target once audio.position() has caught up
+                    // (within 1s tolerance to account for seek latency).
+                    if let Some(target) = self.seek_target {
+                        if (audio.position().as_secs_f32() - target).abs() < 1.0 {
+                            self.seek_target = None;
+                        }
                     }
                     // Auto-scroll PDF when sync map present and audio playing
                     if audio.is_playing() {
