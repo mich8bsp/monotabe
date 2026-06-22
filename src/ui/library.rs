@@ -9,6 +9,7 @@ pub fn view<'a>(
     filter: &'a InstrumentFilter,
     search: &'a str,
     selected_id: Option<&'a str>,
+    library_path: &'a str,
 ) -> Element<'a, Message> {
     let filter_bar = row![
         filter_btn("All", InstrumentFilter::All, filter),
@@ -60,12 +61,22 @@ pub fn view<'a>(
         .on_press(Message::NewSong)
         .style(iced::theme::Button::Secondary);
 
+    let folder_row = row![
+        text(shorten_path(library_path)).size(10).width(Length::Fill),
+        button(text("Change…").size(10))
+            .on_press(Message::PickLibraryFolder)
+            .padding([3, 6])
+            .style(iced::theme::Button::Text),
+    ]
+    .align_items(iced::Alignment::Center);
+
     container(
         column![
             filter_bar,
             search_box,
             scrollable(list).height(Length::Fill),
             add_btn,
+            folder_row,
         ]
         .spacing(8)
         .padding(8)
@@ -73,6 +84,20 @@ pub fn view<'a>(
     )
     .height(Length::Fill)
     .into()
+}
+
+fn shorten_path(path: &str) -> String {
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if path.starts_with(home_str.as_ref()) {
+            return format!("~{}", &path[home_str.len()..]);
+        }
+    }
+    // Truncate long paths from the start
+    if path.len() > 28 {
+        return format!("…{}", &path[path.len() - 25..]);
+    }
+    path.to_string()
 }
 
 fn filter_btn<'a>(

@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, Result};
-use std::path::PathBuf;
+use std::path::Path;
 
 use crate::model::song::{Instrument, Song};
 use crate::model::sync_map::{SyncPoint, TabSyncMap};
@@ -9,10 +9,9 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn open() -> Result<Self> {
-        let path = db_path();
-        std::fs::create_dir_all(path.parent().unwrap()).ok();
-        let conn = Connection::open(&path)?;
+    pub fn open(library_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(library_dir).ok();
+        let conn = Connection::open(library_dir.join("library.db"))?;
         let store = Store { conn };
         store.migrate()?;
         Ok(store)
@@ -150,13 +149,6 @@ impl Store {
             Err(e) => Err(e),
         }
     }
-}
-
-fn db_path() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("monotabe")
-        .join("library.db")
 }
 
 fn unix_now() -> i64 {

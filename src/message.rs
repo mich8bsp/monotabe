@@ -30,6 +30,10 @@ pub enum Message {
     FormPdfPicked(Option<String>),
     FormMp3Picked(Option<String>),
 
+    // Library folder
+    PickLibraryFolder,
+    LibraryFolderPicked(Option<String>),
+
     // Form actions
     FormSubmit,
     FormCancel,

@@ -2,6 +2,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::config::Config;
+
 use iced::widget::{container, row, scrollable, Rule};
 use iced::{Application, Command, Element, Length, Subscription, Theme};
 
@@ -21,6 +23,9 @@ use crate::webview::gtk_window::WebviewHandle;
 const PAGE_GAP_PX: f32 = 4.0;
 
 pub struct Monotabe {
+    config: Config,
+    library_path: PathBuf,
+    library_path_str: String,
     store: Store,
     songs: Vec<Song>,
     filter: InstrumentFilter,
@@ -54,10 +59,16 @@ impl Application for Monotabe {
     type Flags = ();
 
     fn new(_flags: ()) -> (Self, Command<Message>) {
-        let store = Store::open().expect("Failed to open database");
+        let config = Config::load();
+        let library_path = config.effective_library_path();
+        let library_path_str = library_path.to_string_lossy().into_owned();
+        let store = Store::open(&library_path).expect("Failed to open database");
         let songs = store.all_songs().unwrap_or_default();
         (
             Self {
+                config,
+                library_path,
+                library_path_str,
                 store,
                 songs,
                 filter: InstrumentFilter::All,
@@ -260,10 +271,31 @@ impl Application for Monotabe {
 
             // ── Form submit / cancel ──────────────────────────────────────────
             Message::FormSubmit => {
-                if let Some(form) = self.form.take() {
+                if let Some(mut form) = self.form.take() {
                     if !form.is_valid() {
                         self.form = Some(form);
                         return Command::none();
+                    }
+                    // Copy files into library folder (skip if already there)
+                    if !form.pdf_path.is_empty() {
+                        match copy_to_library(&form.pdf_path, &self.library_path, "pdfs") {
+                            Ok(p) => form.pdf_path = p,
+                            Err(e) => {
+                                self.status = Some(format!("PDF copy failed: {e}"));
+                                self.form = Some(form);
+                                return Command::none();
+                            }
+                        }
+                    }
+                    if !form.mp3_path.is_empty() {
+                        match copy_to_library(&form.mp3_path, &self.library_path, "audio") {
+                            Ok(p) => form.mp3_path = p,
+                            Err(e) => {
+                                self.status = Some(format!("Audio copy failed: {e}"));
+                                self.form = Some(form);
+                                return Command::none();
+                            }
+                        }
                     }
                     let song = form.to_song();
                     let is_new = form.editing_id.is_none();
@@ -300,6 +332,38 @@ impl Application for Monotabe {
                     return song_form::tab_next_focus(&mut form.focused_field);
                 }
             }
+
+            // ── Library folder ────────────────────────────────────────────────
+            Message::PickLibraryFolder => {
+                return Command::perform(
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Choose library folder")
+                        .pick_folder(),
+                    |h| Message::LibraryFolderPicked(h.map(|f| f.path().to_string_lossy().to_string())),
+                );
+            }
+            Message::LibraryFolderPicked(Some(path)) => {
+                let new_lib = PathBuf::from(&path);
+                match Store::open(&new_lib) {
+                    Ok(store) => {
+                        self.store = store;
+                        self.library_path_str = new_lib.to_string_lossy().into_owned();
+                        self.library_path = new_lib.clone();
+                        self.config.library_path = Some(new_lib);
+                        self.config.save();
+                        self.songs = self.store.all_songs().unwrap_or_default();
+                        self.selected_song_id = None;
+                        self.pdf_pages = vec![];
+                        self.sync_map = None;
+                        if let Some(audio) = self.audio.as_mut() { audio.stop(); }
+                        self.status = Some(format!("Library folder set to {path}"));
+                    }
+                    Err(e) => {
+                        self.status = Some(format!("Could not open library at {path}: {e}"));
+                    }
+                }
+            }
+            Message::LibraryFolderPicked(None) => {}
 
             // ── External media links ──────────────────────────────────────────
             Message::OpenUrl(url) => {
@@ -499,6 +563,7 @@ impl Application for Monotabe {
             &self.filter,
             &self.search,
             self.selected_song_id.as_deref(),
+            &self.library_path_str,
         );
 
         let right_panel: Element<'_, Message> = if let Some(form) = &self.form {
@@ -626,6 +691,24 @@ fn png_dimensions(path: &Path) -> (f32, f32) {
         Some((w, h))
     })()
     .unwrap_or((1240.0, 1650.0))
+}
+
+fn copy_to_library(src: &str, library_dir: &Path, subfolder: &str) -> Result<String, String> {
+    let src_path = Path::new(src);
+    if src_path.starts_with(library_dir) {
+        return Ok(src.to_string());
+    }
+    let filename = src_path
+        .file_name()
+        .ok_or_else(|| format!("Invalid path: {src}"))?;
+    let dest_dir = library_dir.join(subfolder);
+    std::fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("Cannot create {subfolder} dir: {e}"))?;
+    let dest = dest_dir.join(filename);
+    if !dest.exists() {
+        std::fs::copy(src_path, &dest).map_err(|e| format!("Copy failed: {e}"))?;
+    }
+    Ok(dest.to_string_lossy().to_string())
 }
 
 fn placeholder(msg: &str) -> Element<'_, Message> {
