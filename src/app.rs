@@ -50,6 +50,8 @@ pub struct Monotabe {
     seek_target: Option<f32>,
     // Whether the song detail panel above the PDF is collapsed
     detail_collapsed: bool,
+    // Pitch offset in semitones (applied at audio load time)
+    pitch_semitones: i32,
     // Webview companion window (lazy-initialized on first OpenUrl)
     webview: Option<WebviewHandle>,
 }
@@ -89,6 +91,7 @@ impl Application for Monotabe {
                 sync_analyzing: false,
                 seek_target: None,
                 detail_collapsed: false,
+                pitch_semitones: 0,
                 webview: None,
             },
             Command::none(),
@@ -163,7 +166,7 @@ impl Application for Monotabe {
                     // Load MP3
                     if let Some(path) = song.mp3_path.clone() {
                         if let Some(audio) = self.audio.as_mut() {
-                            if let Err(e) = audio.load(path) {
+                            if let Err(e) = audio.load(path, self.pitch_semitones) {
                                 self.status = Some(format!("Audio load failed: {e}"));
                             }
                         }
@@ -339,6 +342,16 @@ impl Application for Monotabe {
                 if let Some(form) = &mut self.form {
                     return song_form::tab_next_focus(&mut form.focused_field);
                 }
+            }
+
+            // ── Pitch control ─────────────────────────────────────────────────
+            Message::PitchUp => {
+                self.pitch_semitones = (self.pitch_semitones + 1).min(12);
+                self.reload_audio_with_pitch();
+            }
+            Message::PitchDown => {
+                self.pitch_semitones = (self.pitch_semitones - 1).max(-12);
+                self.reload_audio_with_pitch();
             }
 
             // ── Library folder ────────────────────────────────────────────────
@@ -594,6 +607,7 @@ impl Application for Monotabe {
                         duration: a.duration,
                         loaded: a.is_loaded(),
                         slider_pos: self.seek_target.unwrap_or(pos_secs),
+                        pitch_semitones: self.pitch_semitones,
                     }
                 });
                 song_detail::view(
@@ -691,6 +705,19 @@ fn absolute_y_of(
 }
 
 impl Monotabe {
+    fn reload_audio_with_pitch(&mut self) {
+        let path = self.selected_song_id.as_ref()
+            .and_then(|id| self.songs.iter().find(|s| &s.id == id))
+            .and_then(|s| s.mp3_path.clone());
+        if let Some(path) = path {
+            if let Some(audio) = self.audio.as_mut() {
+                if let Err(e) = audio.load(path, self.pitch_semitones) {
+                    self.status = Some(format!("Pitch reload failed: {e}"));
+                }
+            }
+        }
+    }
+
     fn absolute_y(&self, page: usize, y_frac: f32) -> f32 {
         absolute_y_of(&self.pdf_page_heights, &self.pdf_page_widths, self.window_width, page, y_frac)
     }

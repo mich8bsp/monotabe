@@ -38,6 +38,10 @@ pub enum Message {
     FormSubmit,
     FormCancel,
 
+    // Pitch control
+    PitchUp,
+    PitchDown,
+
     // Audio playback
     TogglePlayPause,
     PlayAudio,

@@ -20,18 +20,39 @@ impl AudioPlayer {
         })
     }
 
-    pub fn load(&mut self, path: String) -> Result<(), String> {
-        self.player = None; // stops current audio
+    pub fn load(&mut self, path: String, semitones: i32) -> Result<(), String> {
+        self.player = None;
         let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        // Use TryFrom<File> which sets with_seekable(true) and byte_len — required for seek.
-        let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
-        let total = source.total_duration();
-        let player = Player::connect_new(self._sink.mixer());
-        player.append(source);
-        player.pause();
-        self.player = Some(player);
-        self.path = Some(path);
-        self.duration = total;
+
+        if semitones == 0 {
+            // Seekable path — original behaviour.
+            let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
+            let total = source.total_duration();
+            let player = Player::connect_new(self._sink.mixer());
+            player.append(source);
+            player.pause();
+            self.player = Some(player);
+            self.path = Some(path);
+            self.duration = total;
+        } else {
+            // Pitch-shifted: decode all samples, process, play from buffer.
+            let source = Decoder::try_from(file).map_err(|e| e.to_string())?;
+            let sample_rate = source.sample_rate(); // NonZero<u32>
+            let channels = source.channels();       // NonZero<u16>
+            let raw: Vec<f32> = source.collect();   // Item = f32 in rodio 0.22
+            let shifted = crate::audio::pitch::pitch_shift(&raw, channels.get(), semitones);
+            let total = Some(Duration::from_secs_f64(
+                shifted.len() as f64 / (sample_rate.get() as f64 * channels.get() as f64),
+            ));
+            let buffer = rodio::buffer::SamplesBuffer::new(channels, sample_rate, shifted);
+            let player = Player::connect_new(self._sink.mixer());
+            player.append(buffer);
+            player.pause();
+            self.player = Some(player);
+            self.path = Some(path);
+            self.duration = total;
+        }
+
         Ok(())
     }
 

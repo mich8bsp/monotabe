@@ -13,6 +13,7 @@ pub struct MediaBarState {
     pub duration: Option<Duration>,
     pub loaded: bool,
     pub slider_pos: f32, // seek_target while dragging, otherwise == position as secs
+    pub pitch_semitones: i32,
 }
 
 pub fn view(state: MediaBarState) -> Element<'static, Message> {
@@ -42,10 +43,31 @@ pub fn view(state: MediaBarState) -> Element<'static, Message> {
         .step(0.5f32)
         .width(Length::Fill);
 
+    let pitch_label = match state.pitch_semitones {
+        0 => "0 st".to_string(),
+        n if n > 0 => format!("+{n} st"),
+        n => format!("{n} st"),
+    };
+
+    let pitch_row = row![
+        button(text("-").size(13))
+            .on_press(Message::PitchDown)
+            .padding([4, 10])
+            .style(iced::theme::Button::Secondary),
+        text(pitch_label).size(13),
+        button(text("+").size(13))
+            .on_press(Message::PitchUp)
+            .padding([4, 10])
+            .style(iced::theme::Button::Secondary),
+    ]
+    .spacing(4)
+    .align_items(Alignment::Center);
+
     column![
         row![
             play_btn.padding([6, 14]),
             text(time_str).size(13),
+            pitch_row,
         ]
         .spacing(12)
         .align_items(Alignment::Center),
