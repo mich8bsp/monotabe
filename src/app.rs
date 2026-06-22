@@ -106,7 +106,7 @@ impl Application for Monotabe {
     }
 
     fn theme(&self) -> Theme {
-        Theme::KanagawaWave
+        Theme::KanagawaDragon
     }
 
     fn subscription(&self) -> Subscription<Message> {
