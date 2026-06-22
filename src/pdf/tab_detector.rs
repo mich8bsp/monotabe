@@ -8,6 +8,8 @@ pub struct TabSystem {
     /// y_frac at the vertical center of the 6 (or 4) string lines.
     /// Use this when telling the LLM where to find the row in the image.
     pub string_center: f32,
+    /// Number of bars (measures) detected in this row.
+    pub bar_count: usize,
 }
 
 /// Primary entry point — returns scroll anchors only (used by the auto-scroll path).
@@ -158,10 +160,67 @@ fn detect_inner(png_path: &Path, debug: bool) -> Option<(Vec<TabSystem>, Vec<f32
         systems.push(TabSystem {
             scroll_anchor: anchor_px / height as f32,
             string_center: center_px / height as f32,
+            bar_count: count_bars_in_stave(&img, stave, width),
         });
     }
 
     Some((systems, line_y_fracs))
+}
+
+/// Count the number of bars (measures) in a stave by detecting barlines.
+///
+/// A barline is a vertical line that crosses the full stave height. It shows
+/// up as a column where all inter-string gaps are dark. String lines themselves
+/// are horizontal so they don't create false positives here — inter-string pixels
+/// are only dark at actual barlines (or at note numbers, which at most darken one
+/// or two gaps rather than all of them).
+fn count_bars_in_stave(img: &image::GrayImage, stave: &Stave, width: u32) -> usize {
+    let height = img.height();
+    let threshold = 110u8;
+
+    if stave.line_count < 2 {
+        return 1;
+    }
+
+    // Sample midpoints between consecutive string lines
+    let inter_ys: Vec<u32> = (0..stave.line_count - 1)
+        .map(|i| (stave.top_y + (i as f32 + 0.5) * stave.spacing).round() as u32)
+        .filter(|&y| y < height)
+        .collect();
+
+    if inter_ys.is_empty() {
+        return 1;
+    }
+
+    // Require all but at most one inter-gap to be dark (tolerates minor rendering gaps)
+    let min_hits = inter_ys.len().saturating_sub(1).max(1);
+
+    let x0 = (width as f32 * 0.02) as u32;
+    let x1 = (width as f32 * 0.98) as u32;
+
+    let mut barline_count = 0usize;
+    let mut in_barline = false;
+
+    for x in x0..x1 {
+        let hits = inter_ys
+            .iter()
+            .filter(|&&y| img.get_pixel(x, y)[0] < threshold)
+            .count();
+        let is_bl = hits >= min_hits;
+        match (is_bl, in_barline) {
+            (true, false) => {
+                barline_count += 1;
+                in_barline = true;
+            }
+            (false, true) => {
+                in_barline = false;
+            }
+            _ => {}
+        }
+    }
+
+    // barlines include the left and right stave edges, so bars = barlines - 1
+    barline_count.saturating_sub(1).max(1)
 }
 
 fn row_is_string_line(
