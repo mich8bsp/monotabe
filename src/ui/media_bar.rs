@@ -14,6 +14,7 @@ pub struct MediaBarState {
     pub loaded: bool,
     pub slider_pos: f32, // seek_target while dragging, otherwise == position as secs
     pub pitch_semitones: i32,
+    pub pitch_processing: bool,
 }
 
 pub fn view(state: MediaBarState) -> Element<'static, Message> {
@@ -43,31 +44,43 @@ pub fn view(state: MediaBarState) -> Element<'static, Message> {
         .step(0.5f32)
         .width(Length::Fill);
 
-    let pitch_label = match state.pitch_semitones {
-        0 => "0 st".to_string(),
-        n if n > 0 => format!("+{n} st"),
-        n => format!("{n} st"),
+    let pitch_widget: Element<'static, Message> = if state.pitch_processing {
+        text("Shifting pitch…").size(13).into()
+    } else {
+        let pitch_label = match state.pitch_semitones {
+            0 => "0 st".to_string(),
+            n if n > 0 => format!("+{n} st"),
+            n => format!("{n} st"),
+        };
+        row![
+            button(text("-").size(13))
+                .on_press(Message::PitchDown)
+                .padding([4, 10])
+                .style(iced::theme::Button::Secondary),
+            text(pitch_label).size(13),
+            button(text("+").size(13))
+                .on_press(Message::PitchUp)
+                .padding([4, 10])
+                .style(iced::theme::Button::Secondary),
+        ]
+        .spacing(4)
+        .align_items(Alignment::Center)
+        .into()
     };
 
-    let pitch_row = row![
-        button(text("-").size(13))
-            .on_press(Message::PitchDown)
-            .padding([4, 10])
-            .style(iced::theme::Button::Secondary),
-        text(pitch_label).size(13),
-        button(text("+").size(13))
-            .on_press(Message::PitchUp)
-            .padding([4, 10])
-            .style(iced::theme::Button::Secondary),
-    ]
-    .spacing(4)
-    .align_items(Alignment::Center);
+    let play_btn_or_busy: Element<'static, Message> = if state.pitch_processing {
+        button(text("▶ Play").shaping(Shaping::Advanced))
+            .padding([6, 14])
+            .into()
+    } else {
+        play_btn.padding([6, 14]).into()
+    };
 
     column![
         row![
-            play_btn.padding([6, 14]),
+            play_btn_or_busy,
             text(time_str).size(13),
-            pitch_row,
+            pitch_widget,
         ]
         .spacing(12)
         .align_items(Alignment::Center),

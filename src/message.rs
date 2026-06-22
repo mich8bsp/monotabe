@@ -41,6 +41,8 @@ pub enum Message {
     // Pitch control
     PitchUp,
     PitchDown,
+    PitchShiftReady { path: String, semitones: i32, samples: Vec<f32>, channels: u16, sample_rate: u32 },
+    PitchShiftFailed(String),
 
     // Audio playback
     TogglePlayPause,

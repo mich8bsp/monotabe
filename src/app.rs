@@ -52,6 +52,8 @@ pub struct Monotabe {
     detail_collapsed: bool,
     // Pitch offset in semitones (applied at audio load time)
     pitch_semitones: i32,
+    // True while a background pitch-shift task is running
+    pitch_processing: bool,
     // Webview companion window (lazy-initialized on first OpenUrl)
     webview: Option<WebviewHandle>,
 }
@@ -92,6 +94,7 @@ impl Application for Monotabe {
                 seek_target: None,
                 detail_collapsed: false,
                 pitch_semitones: 0,
+                pitch_processing: false,
                 webview: None,
             },
             Command::none(),
@@ -161,35 +164,47 @@ impl Application for Monotabe {
                 self.sync_map = None;
                 self.sync_analyzing = false;
                 self.seek_target = None;
+                self.pitch_processing = false;
+
+                let mut cmds: Vec<Command<Message>> = vec![];
 
                 if let Some(song) = self.songs.iter().find(|s| s.id == id) {
-                    // Load MP3
                     if let Some(path) = song.mp3_path.clone() {
-                        if let Some(audio) = self.audio.as_mut() {
-                            if let Err(e) = audio.load(path, self.pitch_semitones) {
-                                self.status = Some(format!("Audio load failed: {e}"));
+                        if self.pitch_semitones == 0 {
+                            if let Some(audio) = self.audio.as_mut() {
+                                if let Err(e) = audio.load(path, 0) {
+                                    self.status = Some(format!("Audio load failed: {e}"));
+                                }
                             }
+                        } else {
+                            if let Some(audio) = self.audio.as_mut() { audio.stop(); }
+                            self.pitch_processing = true;
+                            let semitones = self.pitch_semitones;
+                            cmds.push(Command::perform(
+                                decode_and_shift(path, semitones),
+                                map_pitch_result,
+                            ));
                         }
                     } else if let Some(audio) = self.audio.as_mut() {
                         audio.stop();
                     }
 
-                    // Load stored sync map
                     self.sync_map = self.store.load_sync_map(&id).unwrap_or(None);
 
-                    // Render PDF
                     if let Some(pdf_path) = song.pdf_path.clone() {
                         self.pdf_rendering = true;
                         let sid = id.clone();
-                        return Command::perform(
+                        cmds.push(Command::perform(
                             renderer::render_pages(pdf_path, sid),
                             |r| match r {
                                 Ok(pages) => Message::PdfRendered(pages),
                                 Err(e) => Message::PdfError(e),
                             },
-                        );
+                        ));
                     }
                 }
+
+                return Command::batch(cmds);
             }
             Message::FilterChanged(f) => self.filter = f,
             Message::SearchChanged(s) => self.search = s,
@@ -347,11 +362,27 @@ impl Application for Monotabe {
             // ── Pitch control ─────────────────────────────────────────────────
             Message::PitchUp => {
                 self.pitch_semitones = (self.pitch_semitones + 1).min(12);
-                self.reload_audio_with_pitch();
+                if let Some(cmd) = self.start_pitch_reload() { return cmd; }
             }
             Message::PitchDown => {
                 self.pitch_semitones = (self.pitch_semitones - 1).max(-12);
-                self.reload_audio_with_pitch();
+                if let Some(cmd) = self.start_pitch_reload() { return cmd; }
+            }
+            Message::PitchShiftReady { path, semitones, samples, channels, sample_rate } => {
+                self.pitch_processing = false;
+                // Discard stale results (user changed pitch or song while processing).
+                let current_path = self.selected_song_id.as_ref()
+                    .and_then(|id| self.songs.iter().find(|s| &s.id == id))
+                    .and_then(|s| s.mp3_path.as_deref());
+                if semitones == self.pitch_semitones && current_path == Some(path.as_str()) {
+                    if let Some(audio) = self.audio.as_mut() {
+                        audio.load_processed(path, samples, channels, sample_rate);
+                    }
+                }
+            }
+            Message::PitchShiftFailed(e) => {
+                self.pitch_processing = false;
+                self.status = Some(format!("Pitch shift failed: {e}"));
             }
 
             // ── Library folder ────────────────────────────────────────────────
@@ -605,9 +636,10 @@ impl Application for Monotabe {
                         playing: a.is_playing(),
                         position: a.position(),
                         duration: a.duration,
-                        loaded: a.is_loaded(),
+                        loaded: a.is_loaded() || self.pitch_processing,
                         slider_pos: self.seek_target.unwrap_or(pos_secs),
                         pitch_semitones: self.pitch_semitones,
+                        pitch_processing: self.pitch_processing,
                     }
                 });
                 song_detail::view(
@@ -705,21 +737,57 @@ fn absolute_y_of(
 }
 
 impl Monotabe {
-    fn reload_audio_with_pitch(&mut self) {
+    /// Start a background pitch-shift task for the selected song. Returns a
+    /// Command if a task was dispatched, or handles the 0-semitone case inline.
+    fn start_pitch_reload(&mut self) -> Option<Command<Message>> {
         let path = self.selected_song_id.as_ref()
             .and_then(|id| self.songs.iter().find(|s| &s.id == id))
-            .and_then(|s| s.mp3_path.clone());
-        if let Some(path) = path {
+            .and_then(|s| s.mp3_path.clone())?;
+
+        if self.pitch_semitones == 0 {
             if let Some(audio) = self.audio.as_mut() {
-                if let Err(e) = audio.load(path, self.pitch_semitones) {
-                    self.status = Some(format!("Pitch reload failed: {e}"));
+                if let Err(e) = audio.load(path, 0) {
+                    self.status = Some(format!("Audio load failed: {e}"));
                 }
             }
+            return None;
         }
+
+        if let Some(audio) = self.audio.as_mut() { audio.stop(); }
+        self.pitch_processing = true;
+        let semitones = self.pitch_semitones;
+        Some(Command::perform(
+            decode_and_shift(path, semitones),
+            map_pitch_result,
+        ))
     }
 
     fn absolute_y(&self, page: usize, y_frac: f32) -> f32 {
         absolute_y_of(&self.pdf_page_heights, &self.pdf_page_widths, self.window_width, page, y_frac)
+    }
+}
+
+async fn decode_and_shift(path: String, semitones: i32) -> Result<(String, i32, Vec<f32>, u16, u32), String> {
+    tokio::task::spawn_blocking(move || -> Result<(String, i32, Vec<f32>, u16, u32), String> {
+        use rodio::Source;
+        let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let source = rodio::Decoder::try_from(file).map_err(|e| e.to_string())?;
+        let sample_rate = source.sample_rate().get();
+        let channels = source.channels().get();
+        let raw: Vec<f32> = source.collect();
+        let samples = crate::audio::pitch::pitch_shift(&raw, channels, semitones);
+        Ok((path, semitones, samples, channels, sample_rate))
+    })
+    .await
+    .map_err(|e: tokio::task::JoinError| e.to_string())?
+}
+
+fn map_pitch_result(r: Result<(String, i32, Vec<f32>, u16, u32), String>) -> Message {
+    match r {
+        Ok((path, semitones, samples, channels, sample_rate)) => {
+            Message::PitchShiftReady { path, semitones, samples, channels, sample_rate }
+        }
+        Err(e) => Message::PitchShiftFailed(e),
     }
 }
 

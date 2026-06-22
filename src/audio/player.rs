@@ -56,6 +56,23 @@ impl AudioPlayer {
         Ok(())
     }
 
+    /// Load pre-processed (pitch-shifted) samples directly without blocking.
+    pub fn load_processed(&mut self, path: String, samples: Vec<f32>, channels: u16, sample_rate: u32) {
+        use std::num::NonZero;
+        self.player = None;
+        let ch = NonZero::new(channels).expect("channels > 0");
+        let sr = NonZero::new(sample_rate).expect("sample_rate > 0");
+        self.duration = Some(Duration::from_secs_f64(
+            samples.len() as f64 / (sample_rate as f64 * channels as f64),
+        ));
+        let buffer = rodio::buffer::SamplesBuffer::new(ch, sr, samples);
+        let player = Player::connect_new(self._sink.mixer());
+        player.append(buffer);
+        player.pause();
+        self.player = Some(player);
+        self.path = Some(path);
+    }
+
     pub fn play(&mut self) {
         if let Some(p) = &self.player {
             p.play();
