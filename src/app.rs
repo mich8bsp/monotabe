@@ -105,6 +105,10 @@ impl Application for Monotabe {
         "Monotabe".to_string()
     }
 
+    fn theme(&self) -> Theme {
+        Theme::KanagawaWave
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let events = iced::event::listen_with(|event, status| {
             use iced::keyboard::key::Named;
