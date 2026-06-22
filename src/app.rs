@@ -48,6 +48,8 @@ pub struct Monotabe {
     sync_analyzing: bool,
     // Seek scrubbing (slider drag target before mouse release)
     seek_target: Option<f32>,
+    // Whether the song detail panel above the PDF is collapsed
+    detail_collapsed: bool,
     // Webview companion window (lazy-initialized on first OpenUrl)
     webview: Option<WebviewHandle>,
 }
@@ -86,6 +88,7 @@ impl Application for Monotabe {
                 sync_map: None,
                 sync_analyzing: false,
                 seek_target: None,
+                detail_collapsed: false,
                 webview: None,
             },
             Command::none(),
@@ -108,6 +111,11 @@ impl Application for Monotabe {
                     if status == iced::event::Status::Ignored =>
                 {
                     Some(Message::FormTabPressed)
+                }
+                iced::Event::Keyboard(KeyPressed { key: KNamed(Named::Space), .. })
+                    if status == iced::event::Status::Ignored =>
+                {
+                    Some(Message::TogglePlayPause)
                 }
                 iced::Event::Keyboard(KeyPressed { key: KNamed(Named::ArrowLeft), .. })
                     if status == iced::event::Status::Ignored =>
@@ -383,6 +391,11 @@ impl Application for Monotabe {
             }
 
             // ── Audio playback ────────────────────────────────────────────────
+            Message::TogglePlayPause => {
+                if let Some(audio) = self.audio.as_mut() {
+                    if audio.is_playing() { audio.pause(); } else { audio.play(); }
+                }
+            }
             Message::PlayAudio => {
                 if let Some(audio) = self.audio.as_mut() { audio.play(); }
             }
@@ -553,6 +566,9 @@ impl Application for Monotabe {
             Message::WindowResized(w) => {
                 self.window_width = w as f32;
             }
+            Message::ToggleDetailPanel => {
+                self.detail_collapsed = !self.detail_collapsed;
+            }
         }
         Command::none()
     }
@@ -588,6 +604,7 @@ impl Application for Monotabe {
                     self.sync_map.is_some(),
                     self.sync_analyzing,
                     self.confirm_delete_id.as_deref() == Some(&song.id),
+                    self.detail_collapsed,
                 )
             } else {
                 placeholder("Select a song")

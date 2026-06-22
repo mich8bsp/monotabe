@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use iced::widget::text::Shaping;
 use iced::widget::{button, column, row, slider, text};
 use iced::{Alignment, Element, Length};
 
@@ -25,9 +26,9 @@ pub fn view(state: MediaBarState) -> Element<'static, Message> {
     let slider_pos = state.slider_pos;
 
     let play_btn = if state.playing {
-        button("Pause").on_press(Message::PauseAudio)
+        button(text("⏸ Pause").shaping(Shaping::Advanced)).on_press(Message::PauseAudio)
     } else {
-        button("Play").on_press(Message::PlayAudio)
+        button(text("▶ Play").shaping(Shaping::Advanced)).on_press(Message::PlayAudio)
     };
 
     let time_str = format!(

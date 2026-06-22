@@ -39,6 +39,7 @@ pub enum Message {
     FormCancel,
 
     // Audio playback
+    TogglePlayPause,
     PlayAudio,
     PauseAudio,
     ScrubAudio(f32),  // slider dragging: update display only
@@ -70,4 +71,7 @@ pub enum Message {
 
     // Form focus
     FormTabPressed,
+
+    // Detail panel toggle
+    ToggleDetailPanel,
 }

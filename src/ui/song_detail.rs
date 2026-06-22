@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use iced::widget::text::Shaping;
 use iced::widget::{button, column, container, row, text, Rule};
 use iced::{Element, Length};
 
@@ -16,6 +17,7 @@ pub fn view<'a>(
     has_sync_map: bool,
     sync_analyzing: bool,
     confirming_delete: bool,
+    detail_collapsed: bool,
 ) -> Element<'a, Message> {
     let actions = if confirming_delete {
         row![
@@ -114,15 +116,37 @@ pub fn view<'a>(
         top = top.push(sync_row);
     }
 
+    let chevron_label = if detail_collapsed { "∨" } else { "∧" };
+    let chevron_strip = container(
+        button(text(chevron_label).size(11).shaping(Shaping::Advanced))
+            .on_press(Message::ToggleDetailPanel)
+            .padding([0, 6])
+            .style(iced::theme::Button::Text),
+    )
+    .width(Length::Fill)
+    .padding([1, 0]);
+
     // PDF viewer below controls
     let content: Element<'_, Message> = if song.pdf_path.is_some() || pdf_rendering {
-        column![
-            container(top),
-            Rule::horizontal(1),
-            pdf_viewer::view(pdf_pages, pdf_rendering),
-        ]
-        .height(Length::Fill)
-        .into()
+        if detail_collapsed {
+            column![
+                chevron_strip,
+                pdf_viewer::view(pdf_pages, pdf_rendering),
+            ]
+            .height(Length::Fill)
+            .into()
+        } else {
+            column![
+                container(top),
+                Rule::horizontal(1),
+                chevron_strip,
+                pdf_viewer::view(pdf_pages, pdf_rendering),
+            ]
+            .height(Length::Fill)
+            .into()
+        }
+    } else if detail_collapsed {
+        column![chevron_strip].height(Length::Fill).into()
     } else {
         column![container(top)].height(Length::Fill).into()
     };
